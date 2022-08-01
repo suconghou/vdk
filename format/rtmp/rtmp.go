@@ -16,6 +16,7 @@ import (
 
 	"github.com/deepch/vdk/av"
 	"github.com/deepch/vdk/av/avutil"
+	"github.com/deepch/vdk/codec/h264parser"
 	"github.com/deepch/vdk/format/flv"
 	"github.com/deepch/vdk/format/flv/flvio"
 	"github.com/deepch/vdk/utils/bits/pio"
@@ -139,6 +140,7 @@ type Conn struct {
 	chunkHeaderBufExt   []byte
 	URL                 *url.URL
 	OnPlayOrPublish     func(string, flvio.AMFMap) error
+	MetaVersion         int
 	prober              *flv.Prober
 	streams             []av.CodecData
 	txbytes             uint64
@@ -171,6 +173,7 @@ type Conn struct {
 	datamsgvals         []interface{}
 	avtag               flvio.Tag
 	eventtype           uint16
+	msgTimeout          int
 }
 
 type txrxcount struct {
@@ -205,6 +208,7 @@ func NewConn(netconn net.Conn) *Conn {
 	conn.readbuf = make([]byte, 4096)
 	conn.chunkHeaderBuf = make([]byte, 265)
 	conn.chunkHeaderBufExt = make([]byte, 12+4+4)
+	conn.msgTimeout = 10 //默认10秒
 	return conn
 }
 
@@ -249,6 +253,10 @@ func (self *Conn) NetConn() net.Conn {
 	return self.netconn
 }
 
+func (self *Conn) SetMsgTimeout(timeout int) {
+	self.msgTimeout = timeout
+}
+
 func (self *Conn) TxBytes() uint64 {
 	return self.txrxcount.txbytes
 }
@@ -280,6 +288,18 @@ func (self *Conn) pollAVTag() (tag flvio.Tag, err error) {
 		switch self.msgtypeid {
 		case msgtypeidVideoMsg, msgtypeidAudioMsg:
 			tag = self.avtag
+			// 修复webrtc推流中分辨率动态调整,导致的分发出去的rtmp流花屏问题
+			if tag.FrameType == flvio.FRAME_KEY && tag.CodecID == flvio.VIDEO_H264 && tag.AVCPacketType == flvio.AVC_SEQHDR {
+				s, err := h264parser.NewCodecDataFromAVCDecoderConfRecord(tag.Data)
+				if err == nil {
+					for i, ss := range self.streams {
+						if ss.Type().IsVideo() {
+							self.streams[i] = s
+							self.MetaVersion++
+						}
+					}
+				}
+			}
 			return
 		}
 	}
@@ -290,7 +310,9 @@ func (self *Conn) pollMsg() (err error) {
 	self.gotcommand = false
 	self.datamsgvals = nil
 	self.avtag = flvio.Tag{}
+	defer self.netconn.SetReadDeadline(time.Time{})
 	for {
+		self.netconn.SetReadDeadline(time.Now().Add(time.Second * time.Duration(self.msgTimeout)))
 		if err = self.readChunk(); err != nil {
 			return
 		}
@@ -313,9 +335,7 @@ func SplitPath(u *url.URL) (app, stream string) {
 
 func getTcUrl(u *url.URL) string {
 	app, _ := SplitPath(u)
-	nu := *u
-	nu.Path = "/" + app
-	return nu.String()
+	return fmt.Sprintf("%s://%s/%s", u.Scheme, u.Host, app)
 }
 
 func createURL(tcurl, app, play string) (u *url.URL) {
@@ -557,6 +577,17 @@ func (self *Conn) checkCreateStreamResult() (ok bool, avmsgsid uint32) {
 	return
 }
 
+func (self *Conn) checkStatusStreamResult() error {
+	if len(self.commandparams) < 1 {
+		return fmt.Errorf("error onStatus resp")
+	}
+	v := self.commandparams[0].(flvio.AMFMap)
+	if v["code"] == "NetStream.Publish.Start" {
+		return nil
+	}
+	return fmt.Errorf("%s", v)
+}
+
 func (self *Conn) probe() (err error) {
 	for !self.prober.Probed() {
 		var tag flvio.Tag
@@ -622,7 +653,7 @@ func (self *Conn) writeConnect(path string) (err error) {
 				if len(self.msgdata) == 4 {
 					self.readAckSize = pio.U32BE(self.msgdata)
 				}
-				if err = self.writeWindowAckSize(0xffffffff); err != nil {
+				if err = self.writeWindowAckSize(5000000); err != nil {
 					return
 				}
 			}
@@ -672,13 +703,28 @@ func (self *Conn) connectPublish() (err error) {
 	if Debug {
 		fmt.Printf("rtmp: > publish('%s')\n", publishpath)
 	}
-	if err = self.writeCommandMsg(8, self.avmsgsid, "publish", transid, nil, publishpath); err != nil {
+	if err = self.writeCommandMsg(8, self.avmsgsid, "publish", transid, nil, publishpath, connectpath); err != nil {
 		return
 	}
 	transid++
 
 	if err = self.flushWrite(); err != nil {
 		return
+	}
+
+	for {
+		if err = self.pollMsg(); err != nil {
+			return
+		}
+		if self.gotcommand {
+			// NetStream.Publish.Start
+			if self.commandname == "onStatus" {
+				if err = self.checkStatusStreamResult(); err != nil {
+					return err
+				}
+				break
+			}
+		}
 	}
 
 	self.writing = true
@@ -862,6 +908,13 @@ func (self *Conn) WriteHeader(streams []av.CodecData) (err error) {
 		return
 	}
 
+	err = self.WriteMeta(streams)
+	self.stage++
+	return
+}
+
+// WriteHeader 调用之后,分辨率等数据发生变化,可调用此方法
+func (self *Conn) WriteMeta(streams []av.CodecData) (err error) {
 	for _, stream := range streams {
 		var ok bool
 		var tag flvio.Tag
@@ -874,9 +927,7 @@ func (self *Conn) WriteHeader(streams []av.CodecData) (err error) {
 			}
 		}
 	}
-
 	self.streams = streams
-	self.stage++
 	return
 }
 

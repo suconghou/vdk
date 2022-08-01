@@ -65,6 +65,11 @@ func (self *Queue) WriteHeader(streams []av.CodecData) error {
 	return nil
 }
 
+// 在WriteHeader后,后续数据流分辨率发生变化了,可用此方法替换header
+func (self *Queue) SetHeader(streams []av.CodecData) {
+	self.streams = streams
+}
+
 func (self *Queue) WriteTrailer() error {
 	return nil
 }
@@ -104,6 +109,11 @@ func (self *Queue) WritePacket(pkt av.Packet) (err error) {
 
 	self.lock.Unlock()
 	return
+}
+
+// GetVideoIdx returns the internal index of the video stream
+func (self *Queue) GetVideoIdx() (idx int8) {
+	return int8(self.videoidx)
 }
 
 type QueueCursor struct {

@@ -15,7 +15,7 @@ import (
 	"github.com/deepch/vdk/utils/bits/pio"
 )
 
-var MaxProbePacketCount = 20
+var MaxProbePacketCount = 50
 
 func NewMetadataByStreams(streams []av.CodecData) (metadata flvio.AMFMap, err error) {
 	metadata = flvio.AMFMap{}
@@ -315,9 +315,10 @@ func PacketToTag(pkt av.Packet, stream av.CodecData) (tag flvio.Tag, timestamp i
 }
 
 type Muxer struct {
-	bufw    writeFlusher
-	b       []byte
-	streams []av.CodecData
+	bufw        writeFlusher
+	b           []byte
+	streams     []av.CodecData
+	MetaVersion int
 }
 
 type writeFlusher interface {
@@ -353,6 +354,10 @@ func (self *Muxer) WriteHeader(streams []av.CodecData) (err error) {
 		return
 	}
 
+	return self.WriteMeta(streams)
+}
+
+func (self *Muxer) WriteMeta(streams []av.CodecData) (err error) {
 	for _, stream := range streams {
 		var tag flvio.Tag
 		var ok bool
@@ -365,7 +370,6 @@ func (self *Muxer) WriteHeader(streams []av.CodecData) (err error) {
 			}
 		}
 	}
-
 	self.streams = streams
 	return
 }
