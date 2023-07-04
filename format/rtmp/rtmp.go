@@ -608,15 +608,15 @@ func (self *Conn) writeConnect(path string) (err error) {
 	if err = self.writeBasicConf(); err != nil {
 		return
 	}
-
+	var tcUrl = getTcUrl(self.URL)
 	if Debug {
-		fmt.Printf("rtmp: > connect('%s') host=%s\n", path, self.URL.Host)
+		fmt.Printf("rtmp: > connect('%s') host=%s tcUrl=%s\n", path, self.URL.Host, tcUrl)
 	}
 	if err = self.writeCommandMsg(3, 0, "connect", 1,
 		flvio.AMFMap{
 			"app":           path,
 			"flashVer":      "MAC 22,0,0,192",
-			"tcUrl":         getTcUrl(self.URL),
+			"tcUrl":         tcUrl,
 			"fpad":          false,
 			"capabilities":  15,
 			"audioCodecs":   4071,
@@ -665,7 +665,9 @@ func (self *Conn) writeConnect(path string) (err error) {
 
 func (self *Conn) connectPublish() (err error) {
 	connectpath, publishpath := SplitPath(self.URL)
-
+	if Debug {
+		fmt.Printf("rtmp: > writeConnect(%s)\n", connectpath)
+	}
 	if err = self.writeConnect(connectpath); err != nil {
 		return
 	}
