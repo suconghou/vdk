@@ -216,6 +216,7 @@ type chunkStream struct {
 	timenow     uint32
 	timedelta   uint32
 	hastimeext  bool
+	timeext     uint32
 	msgsid      uint32
 	msgtypeid   uint8
 	msgdatalen  uint32
@@ -1258,6 +1259,7 @@ func (self *Conn) readChunk() (err error) {
 			n += 4
 			timestamp = pio.U32BE(b)
 			cs.hastimeext = true
+			cs.timeext = timestamp
 		} else {
 			cs.hastimeext = false
 		}
@@ -1294,6 +1296,7 @@ func (self *Conn) readChunk() (err error) {
 			n += 4
 			timestamp = pio.U32BE(b)
 			cs.hastimeext = true
+			cs.timeext = timestamp
 		} else {
 			cs.hastimeext = false
 		}
@@ -1327,6 +1330,7 @@ func (self *Conn) readChunk() (err error) {
 			n += 4
 			timestamp = pio.U32BE(b)
 			cs.hastimeext = true
+			cs.timeext = timestamp
 		} else {
 			cs.hastimeext = false
 		}
@@ -1345,6 +1349,7 @@ func (self *Conn) readChunk() (err error) {
 					n += 4
 					timestamp = pio.U32BE(b)
 					cs.timenow = timestamp
+					cs.timeext = timestamp
 				}
 			case 1, 2:
 				if cs.hastimeext {
@@ -1359,6 +1364,18 @@ func (self *Conn) readChunk() (err error) {
 				cs.timenow += timestamp
 			}
 			cs.Start()
+		} else {
+			if cs.hastimeext {
+				var b []byte
+				if b, err = self.bufr.Peek(4); err != nil {
+					return
+				}
+				if pio.U32BE(b) == cs.timeext {
+					if _, err = io.ReadFull(self.bufr, b[:4]); err != nil {
+						return
+					}
+				}
+			}
 		}
 
 	default:
